@@ -145,49 +145,43 @@ jobs:
 
           bugs=$(curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
             "${{ secrets.SONAR_HOST_URL }}/api/issues/search?projectKeys=${{ secrets.SONAR_PROJECT_KEY }}&resolved=false" \
-            | jq .total)
+            | jq .total 2>/dev/null || echo 0)
 
-          high=$(jq '[.Results[].Vulnerabilities[]?|select(.Severity=="HIGH")]|length' trivy.json)
-          critical=$(jq '[.Results[].Vulnerabilities[]?|select(.Severity=="CRITICAL")]|length' trivy.json)
+          high=$(jq '[.Results[].Vulnerabilities[]?|select(.Severity=="HIGH")]|length' trivy.json 2>/dev/null || echo 0)
+          critical=$(jq '[.Results[].Vulnerabilities[]?|select(.Severity=="CRITICAL")]|length' trivy.json 2>/dev/null || echo 0)
 
           echo "qualityGate=$status" >> $GITHUB_OUTPUT
-          echo "bugs=$bugs" >> $GITHUB_OUTPUT
-          echo "high=$high" >> $GITHUB_OUTPUT
-          echo "critical=$critical" >> $GITHUB_OUTPUT
+          echo "bugs=${bugs:-0}" >> $GITHUB_OUTPUT
+          echo "high=${high:-0}" >> $GITHUB_OUTPUT
+          echo "critical=${critical:-0}" >> $GITHUB_OUTPUT
           echo "image=$ECR_REPO:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-          [[ "$status" != "OK" || $bugs -gt 0 || $high -gt 0 || $critical -gt 0 ]] \
+          [[ "$status" != "OK" || ${bugs:-0} -gt 0 || ${high:-0} -gt 0 || ${critical:-0} -gt 0 ]] \
             && echo "failed=true" >> $GITHUB_OUTPUT || echo "failed=false" >> $GITHUB_OUTPUT
+
 
       - name: Send Sonar → Graylog
         run: |
-          qualityGate="${{ steps.eval.outputs.qualityGate }}"
-          bugs="${{ steps.eval.outputs.bugs }}"
           curl -sS -X POST "http://54.160.169.95:12202/gelf" \
             -H "Content-Type: application/json" \
             -d "{
               \"short_message\": \"SonarQube results\",
               \"host\": \"github-actions\",
               \"_projectKey\": \"${{ secrets.SONAR_PROJECT_KEY }}\",
-              \"_qualityGate\": \"$qualityGate\",
-              \"_bugs\": $bugs,
-              \"gl2_original_timestamp\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"
+              \"_qualityGate\": \"${{ steps.eval.outputs.qualityGate }}\",
+              \"_bugs\": ${ { steps.eval.outputs.bugs != '' && steps.eval.outputs.bugs || 0 } }
             }"
 
       - name: Send Trivy → Graylog
         run: |
-          image="${{ steps.eval.outputs.image }}"
-          critical="${{ steps.eval.outputs.critical }}"
-          high="${{ steps.eval.outputs.high }}"
           curl -sS -X POST "http://54.160.169.95:12203/gelf" \
             -H "Content-Type: application/json" \
             -d "{
               \"short_message\": \"Trivy scan results\",
               \"host\": \"github-actions\",
-              \"_image\": \"$image\",
-              \"_critical\": $critical,
-              \"_high\": $high,
-              \"gl2_original_timestamp\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"
+              \"_image\": \"${{ steps.eval.outputs.image }}\",
+              \"_critical\": ${ { steps.eval.outputs.critical != '' && steps.eval.outputs.critical || 0 } },
+              \"_high\": ${ { steps.eval.outputs.high != '' && steps.eval.outputs.high || 0 } }
             }"
 
 
