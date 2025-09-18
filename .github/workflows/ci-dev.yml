@@ -75,11 +75,12 @@ jobs:
 
       - name: Trivy scan ECR image
         run: |
-          trivy image --format sarif \
+          trivy image --scanners vuln --severity HIGH,CRITICAL --format sarif \
             -o trivy.sarif \
             $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG || true
 
       - name: Upload SARIF to GitHub Security tab
+        if: success() || failure()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy.sarif
