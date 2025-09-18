@@ -17,6 +17,8 @@ env:
 jobs:
   sonarqube:
     runs-on: ubuntu-latest
+    outputs:
+      quality_gate_status: ${{steps.gate.outputs.quality-gate-status}}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,7 +68,7 @@ jobs:
 
   trivy_scan:
     runs-on: ubuntu-latest
-    needs: build_and_push
+    needs: [build_and_push,sonarqube]
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -99,6 +101,15 @@ jobs:
         with:
           sarif_file: trivy.sarif
 
+      - name: Trivy scan ECR image (JSON for parsing)
+        run: |
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format json \
+            -o trivy.json \
+            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG || true
+
       - name: Evaluate results
         id: eval
         run: |
@@ -125,8 +136,6 @@ jobs:
           curl -sS -X POST ${{secrets.GRAYLOG_SONAR_URL}}\
             -H "Content-Type: application/json" \
             -d "{
-              \"short_message\": \"SonarQube results\",
-              \"host\": \"github-actions\",
               \"_projectKey\": \"${{ secrets.SONAR_PROJECT_KEY }}\",
               \"_qualityGate\": \"${{ steps.eval.outputs.qualityGate }}\",
               \"_bugs\": ${{ steps.eval.outputs.bugs || 0 }},
@@ -138,8 +147,6 @@ jobs:
           curl -sS -X POST ${{secrets.GRAYLOG_TRIVY_URL}} \
             -H "Content-Type: application/json" \
             -d "{
-              \"short_message\": \"Trivy scan results\",
-              \"host\": \"github-actions\",
               \"_image\": \"${{ steps.eval.outputs.image }}\",
               \"_critical\": ${{ steps.eval.outputs.critical || 0 }},
               \"_high\": ${{ steps.eval.outputs.high || 0 }},
