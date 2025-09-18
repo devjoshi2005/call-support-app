@@ -85,7 +85,7 @@ jobs:
 
       - name: Pull ECR Image for caching
         run: |
-          docker pull $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonas.com/$ECR_REPO:$IMAGE_TAG
+          docker pull $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
 
       - name: Trivy scan ECR image
         run: |
