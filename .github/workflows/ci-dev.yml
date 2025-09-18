@@ -161,7 +161,7 @@ jobs:
 
       - name: Send Sonar → Graylog
         run: |
-          curl -sS -X POST ${{secrets.GRAYLOG_SONAR_URL}}\
+          curl -sS -X POST "http://54.160.169.95:12202/gelf"\
             -H "Content-Type: application/json" \
             -d "{
               \"_projectKey\": \"${{ secrets.SONAR_PROJECT_KEY }}\",
@@ -172,7 +172,7 @@ jobs:
 
       - name: Send Trivy → Graylog
         run: |
-          curl -sS -X POST ${{secrets.GRAYLOG_TRIVY_URL}} \
+          curl -sS -X POST "http://54.160.169.95:12203/gelf" \
             -H "Content-Type: application/json" \
             -d "{
               \"_image\": \"${{ steps.eval.outputs.image }}\",
