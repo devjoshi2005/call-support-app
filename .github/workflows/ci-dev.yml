@@ -169,7 +169,7 @@ jobs:
               \"host\": \"github-actions\",
               \"_projectKey\": \"${{ secrets.SONAR_PROJECT_KEY }}\",
               \"_qualityGate\": \"${{ steps.eval.outputs.qualityGate }}\",
-              \"_bugs\": ${ { steps.eval.outputs.bugs != '' && steps.eval.outputs.bugs || 0 } }
+              \"_bugs\": ${{ steps.eval.outputs.bugs != '' && steps.eval.outputs.bugs || 0 }}
             }"
 
       - name: Send Trivy → Graylog
@@ -180,8 +180,8 @@ jobs:
               \"short_message\": \"Trivy scan results\",
               \"host\": \"github-actions\",
               \"_image\": \"${{ steps.eval.outputs.image }}\",
-              \"_critical\": ${ { steps.eval.outputs.critical != '' && steps.eval.outputs.critical || 0 } },
-              \"_high\": ${ { steps.eval.outputs.high != '' && steps.eval.outputs.high || 0 } }
+              \"_critical\": ${{ steps.eval.outputs.critical != '' && steps.eval.outputs.critical || 0 }},
+              \"_high\": ${{ steps.eval.outputs.high != '' && steps.eval.outputs.high || 0 }}
             }"
 
 
