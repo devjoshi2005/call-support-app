@@ -197,15 +197,34 @@ jobs:
           name: trivy-sarif
           path: .
 
-      - name: Fetch SonarQube issues
+      - name: Fetch SonarQube issues (filtered)
         run: |
+          # Valid severities in SonarQube: INFO, MINOR, MAJOR, CRITICAL, BLOCKER
           curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
-            "${{ secrets.SONAR_HOST_URL }}/api/issues/search?projectKeys=${{ secrets.SONAR_PROJECT_KEY }}&severities=CRITICAL,HIGH&resolved=false" \
-            -o sonar_issues.json
+            "${{ secrets.SONAR_HOST_URL }}/api/issues/search?projectKeys=${{ secrets.SONAR_PROJECT_KEY }}&severities=CRITICAL,BLOCKER&resolved=false&ps=500" \
+            -o sonar_issues_raw.json
+
+          # Produce a compact summary for n8n
+          jq '{
+            project: "'${{ secrets.SONAR_PROJECT_KEY }}'",
+            total: (.total // 0),
+            critical: (.issues | map(select(.severity=="CRITICAL")) | length),
+            blocker: (.issues | map(select(.severity=="BLOCKER")) | length),
+            issues: (.issues | map({
+              key, rule, severity,
+              type,
+              message,
+              component,
+              line: (.line // null),
+              author: (.author // null),
+              creationDate: (.creationDate // null),
+              tags: (.tags // [])
+            }) )
+          }' sonar_issues_raw.json > sonar_issues.json
 
       - name: Send to n8n
         run: |
-          SAFE_SONAR=$(python3 -c 'import json,sys; print(json.dumps(open("sonar_issues.json").read()))')
+          SAFE_SONAR=$(cat sonar_issues.json)
           SAFE_TRIVY=$(python3 -c 'import json,sys; print(json.dumps(open("trivy.sarif").read()))')
 
           cat <<EOF > payload.json
