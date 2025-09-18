@@ -1,0 +1,174 @@
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  security-events: write  
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REPO: ${{ secrets.ECR_REPO }}
+  IMAGE_TAG: prod-${{ github.sha }}
+
+jobs:
+  sonarqube:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+
+      - name: SonarQube Quality Gate
+        id: gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      
+  build_and_push:
+    runs-on: ubuntu-latest
+    needs: sonarqube
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: docker build -t $ECR_REPO:$IMAGE_TAG .
+
+      - name: Push to ECR
+        run: |
+          docker tag $ECR_REPO:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+
+  trivy_scan:
+    runs-on: ubuntu-latest
+    needs: build_and_push
+    steps:
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Trivy scan ECR image
+        run: |
+          trivy image --format sarif \
+            -o trivy.sarif \
+            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG || true
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+
+      - name: Evaluate results
+        id: eval
+        run: |
+          status=$([ "${{ needs.sonarqube.outputs.quality_gate_status }}" != "PASSED" ] && echo FAILED || echo OK)
+
+          bugs=$(curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
+            "${{ secrets.SONAR_HOST_URL }}/api/issues/search?projectKeys=${{ secrets.SONAR_PROJECT_KEY }}&resolved=false" \
+            | jq .total)
+
+          high=$(jq '[.Results[].Vulnerabilities[]?|select(.Severity=="HIGH")]|length' trivy.json)
+          critical=$(jq '[.Results[].Vulnerabilities[]?|select(.Severity=="CRITICAL")]|length' trivy.json)
+
+          echo "qualityGate=$status" >> $GITHUB_OUTPUT
+          echo "bugs=$bugs" >> $GITHUB_OUTPUT
+          echo "high=$high" >> $GITHUB_OUTPUT
+          echo "critical=$critical" >> $GITHUB_OUTPUT
+          echo "image=$ECR_REPO:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+          [[ "$status" != "OK" || $bugs -gt 0 || $high -gt 0 || $critical -gt 0 ]] \
+            && echo "failed=true" >> $GITHUB_OUTPUT || echo "failed=false" >> $GITHUB_OUTPUT
+
+      - name: Send Sonar → Graylog
+        run: |
+          curl -sS -X POST ${{secrets.GRAYLOG_SONAR_URL}}\
+            -H "Content-Type: application/json" \
+            -d "{
+              \"short_message\": \"SonarQube results\",
+              \"host\": \"github-actions\",
+              \"_projectKey\": \"${{ secrets.SONAR_PROJECT_KEY }}\",
+              \"_qualityGate\": \"${{ steps.eval.outputs.qualityGate }}\",
+              \"_bugs\": ${{ steps.eval.outputs.bugs || 0 }},
+              \"gl2_original_timestamp\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"
+            }"
+
+      - name: Send Trivy → Graylog
+        run: |
+          curl -sS -X POST ${{secrets.GRAYLOG_TRIVY_URL}} \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"short_message\": \"Trivy scan results\",
+              \"host\": \"github-actions\",
+              \"_image\": \"${{ steps.eval.outputs.image }}\",
+              \"_critical\": ${{ steps.eval.outputs.critical || 0 }},
+              \"_high\": ${{ steps.eval.outputs.high || 0 }},
+              \"gl2_original_timestamp\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"
+            }"
+
+      - name: Save SARIF as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-sarif
+          path: trivy.sarif
+
+  notify_n8n:
+    runs-on: ubuntu-latest
+    needs: trivy_scan
+    steps:
+      - name: Download Trivy SARIF
+        uses: actions/download-artifact@v4
+        with:
+          name: trivy-sarif
+          path: .
+
+      - name: Fetch SonarQube issues
+        run: |
+          curl -s -u "${{ secrets.SONAR_TOKEN }}:" \
+            "${{ secrets.SONAR_HOST_URL }}/api/issues/search?projectKeys=${{ secrets.SONAR_PROJECT_KEY }}&severities=CRITICAL,HIGH&resolved=false" \
+            -o sonar_issues.json
+
+      - name: Send to n8n
+        run: |
+          SAFE_SONAR=$(python3 -c 'import json,sys; print(json.dumps(open("sonar_issues.json").read()))')
+          SAFE_TRIVY=$(python3 -c 'import json,sys; print(json.dumps(open("trivy.sarif").read()))')
+
+          cat <<EOF > payload.json
+          {
+            "event": "DevSecOps Scan Complete",
+            "repo": "${{ github.repository }}",
+            "commit": "${{ github.sha }}",
+            "ecr_image": "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG",
+            "sonarqube_issues": $SAFE_SONAR,
+            "trivy_report": $SAFE_TRIVY
+          }
+          EOF
+
+          curl -X POST https://automation-devj-account11.app.n8n.cloud/webhook/devsecops/raw  \
+            --header 'Content-Type: application/json' \
+            --data @payload.json

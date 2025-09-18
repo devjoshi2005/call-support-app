@@ -1,0 +1,5 @@
+*.tf
+*.json
+credentials
+.terraform*
+terraform*
