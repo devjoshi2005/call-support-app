@@ -197,44 +197,18 @@ jobs:
           name: trivy-sarif
           path: .
 
-      - name: Fetch SonarQube issues
+      - name: Fetch SonarQube bug messages
+
         run: |
           set -euo pipefail
 
           BASE_URL="${SONAR_HOST_URL}/api/issues/search"
-          PARAMS="projectKeys=${SONAR_PROJECT_KEY}&types=BUG&severities=MAJOR,CRITICAL,BLOCKER&resolved=false&ps=500"
-          
-          curl -s -u "${SONAR_TOKEN}:" "${BASE_URL}?${PARAMS}&p=1" -o page1.json
-          TOTAL=$(jq -r '.total // 0' page1.json)
-          PAGES=$(( (TOTAL + 500 - 1) / 500 ))
+          PARAMS="projectKeys=${SONAR_PROJECT_KEY}&types=BUG&resolved=false&ps=500"
+         
+          curl -s -u "${SONAR_TOKEN}:" "${BASE_URL}?${PARAMS}&p=1" -o sonar_raw.json
 
-          jq '.issues' page1.json > all_issues.json
-          if [ "$PAGES" -gt 1 ]; then
-            for p in $(seq 2 "$PAGES"); do
-              curl -s -u "${SONAR_TOKEN}:" "${BASE_URL}?${PARAMS}&p=${p}" -o "page${p}.json"
-              jq '.issues' "page${p}.json" >> all_issues.json
-            done
-          fi
+          jq '{project: "'${SONAR_PROJECT_KEY}'", messages: [.issues[].message]}' sonar_raw.json > sonar_issues.json
 
-          jq -s 'add' all_issues.json > merged_issues.json
-
-          jq --arg project "${SONAR_PROJECT_KEY}"'{
-            projectKey: $project,
-            branch: ($branch | select(length>0)),
-            total: (. | length),
-            major: (map(select(.severity=="MAJOR")) | length),
-            critical: (map(select(.severity=="CRITICAL")) | length),
-            blocker: (map(select(.severity=="BLOCKER")) | length),
-            issues: map({
-              key, rule, severity, type, message, component,
-              line: (.line // null),
-              author: (.author // null),
-              creationDate: (.creationDate // null),
-              tags: (.tags // [])
-            })
-          }' merged_issues.json > sonar_issues.json
-
-          jq '{projectKey, branch, total, major, critical, blocker}' sonar_issues.json
 
 
 
