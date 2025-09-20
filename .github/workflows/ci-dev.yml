@@ -256,19 +256,22 @@ jobs:
           echo "S3_URI=s3://${SNAPSHOT_BUCKET}/${KEY}" >> $GITHUB_ENV
       
       - name: Prepare Bedrock input (python)
+        env:
+          REPO: ${{ github.repository }}
+          BRANCH: main
+          SNAPSHOT_BUCKET: ${{ env.SNAPSHOT_BUCKET }}
+          S3_KEY: snapshots/${{ github.sha }}/code.tar.gz
         run: |
           set -euo pipefail
-          KEY="snapshots/${{ github.sha }}/code.tar.gz"
           python3 - <<'PY'
-          import json, sys
+          import os, json
           from pathlib import Path
 
-          repo = "${{ github.repository }}"
-          branch = "main"
-          s3_uri = f"s3://${{ env.SNAPSHOT_BUCKET }}/{\"snapshots/${{ github.sha }}/code.tar.gz\"}"
+          repo = os.environ["REPO"]
+          branch = os.environ["BRANCH"]
+          s3_uri = f"s3://{os.environ['SNAPSHOT_BUCKET']}/{os.environ['S3_KEY']}"
 
           sonar = json.loads(Path("sonar_issues.json").read_text(encoding="utf-8"))
-          # If SARIF is huge, you can slim it here before dumping
           trivy = json.loads(Path("trivy.sarif").read_text(encoding="utf-8"))
 
           out = {
@@ -282,7 +285,8 @@ jobs:
           print("bedrock_input.json bytes:", len(json.dumps(out)))
           PY
 
-          head -c 500 bedrock_input.json; echo
+     
+
     
 
           
