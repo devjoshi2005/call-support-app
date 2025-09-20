@@ -204,29 +204,27 @@ jobs:
           BASE_URL="${SONAR_HOST_URL}/api/issues/search"
           PARAMS="projectKeys=${SONAR_PROJECT_KEY}&types=BUG&severities=MAJOR,CRITICAL,BLOCKER&resolved=false&ps=500"
           
-
-          # Fetch first page
           curl -s -u "${SONAR_TOKEN}:" "${BASE_URL}?${PARAMS}&p=1" -o page1.json
           TOTAL=$(jq -r '.total // 0' page1.json)
           PAGES=$(( (TOTAL + 500 - 1) / 500 ))
 
-          # Collect all issues into one array
-          jq -c '.issues[]?' page1.json > all_issues.jsonl
+          jq '.issues' page1.json > all_issues.json
           if [ "$PAGES" -gt 1 ]; then
             for p in $(seq 2 "$PAGES"); do
               curl -s -u "${SONAR_TOKEN}:" "${BASE_URL}?${PARAMS}&p=${p}" -o "page${p}.json"
-              jq -c '.issues[]?' "page${p}.json" >> all_issues.jsonl
+              jq '.issues' "page${p}.json" >> all_issues.json
             done
           fi
 
-          # Build compact summary JSON
-          jq -s --arg project "${SONAR_PROJECT_KEY}" --arg branch "${SONAR_BRANCH:-}" '{
+          jq -s 'add' all_issues.json > merged_issues.json
+
+          jq --arg project "${SONAR_PROJECT_KEY}"'{
             projectKey: $project,
             branch: ($branch | select(length>0)),
-            total: length,
-            major: map(select(.severity=="MAJOR")) | length,
-            critical: map(select(.severity=="CRITICAL")) | length,
-            blocker: map(select(.severity=="BLOCKER")) | length,
+            total: (. | length),
+            major: (map(select(.severity=="MAJOR")) | length),
+            critical: (map(select(.severity=="CRITICAL")) | length),
+            blocker: (map(select(.severity=="BLOCKER")) | length),
             issues: map({
               key, rule, severity, type, message, component,
               line: (.line // null),
@@ -234,9 +232,8 @@ jobs:
               creationDate: (.creationDate // null),
               tags: (.tags // [])
             })
-          }' all_issues.jsonl > sonar_issues.json
+          }' merged_issues.json > sonar_issues.json
 
-          echo "SonarQube summary:"
           jq '{projectKey, branch, total, major, critical, blocker}' sonar_issues.json
 
 
