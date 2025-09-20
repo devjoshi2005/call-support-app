@@ -16,7 +16,7 @@ env:
   ECR_REPO: ${{ secrets.ECR_REPO }}
   IMAGE_TAG: prod-${{ github.sha }}
   SNAPSHOT_BUCKET: devsecops-mybucket-123
-  MODEL_ID: anthropic.claude-3-5-sonnet-20240620
+  MODEL_ID: anthropic.claude-3-5-sonnet-20241022-v2:0
 
 jobs:
   scan_build_upload_to_ECR_and_Remediation:
