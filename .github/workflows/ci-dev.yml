@@ -226,13 +226,13 @@ jobs:
       - name: Login to ECR (passwordless token)
         run: |
           set -euo pipefail
-          REGISTRY=$(echo "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG" | awk -F/ '{print $1}')
+          REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "$REGISTRY"
-      
+
       - name: Pull image and extract /app
         env:
-          ECR_IMAGE: "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
+          ECR_IMAGE: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO }}:${{ env.IMAGE_TAG }}
         run: |
           set -euo pipefail
           docker pull "$ECR_IMAGE"
@@ -244,6 +244,7 @@ jobs:
           cd /tmp
           tar -czf code.tar.gz code
           ls -lah code.tar.gz
+
 
       - name: Upload snapshot to S3
         env:
