@@ -202,12 +202,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          BASE_URL="${SONAR_HOST_URL}/api/issues/search"
-          PARAMS="projectKeys=${SONAR_PROJECT_KEY}&types=BUG&resolved=false&ps=500"
+          BASE_URL="${{secrets.SONAR_HOST_URL}}/api/issues/search"
+          PARAMS="projectKeys=${{secrets.SONAR_PROJECT_KEY}}&types=BUG&resolved=false&ps=500"
          
-          curl -s -u "${SONAR_TOKEN}:" "${BASE_URL}?${PARAMS}&p=1" -o sonar_raw.json
+          curl -s -u "${{secrets.SONAR_TOKEN}}:" "${BASE_URL}?${PARAMS}&p=1" -o sonar_raw.json
 
-          jq '{project: "'${SONAR_PROJECT_KEY}'", messages: [.issues[].message]}' sonar_raw.json > sonar_issues.json
+          jq '{project: "'${{secrets.SONAR_PROJECT_KEY}}'", messages: [.issues[].message]}' sonar_raw.json > sonar_issues.json
 
 
 
