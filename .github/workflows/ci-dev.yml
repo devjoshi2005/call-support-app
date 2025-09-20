@@ -7,15 +7,19 @@ on:
 permissions:
   contents: read
   security-events: write  
+  id-token: write
+  pull-requests: write
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   ECR_REPO: ${{ secrets.ECR_REPO }}
   IMAGE_TAG: prod-${{ github.sha }}
+  SNAPSHOT_BUCKET: devsecops-mybucket-123
+  MODEL_ID: anthropic.claude-3-5-sonnet-20240620
 
 jobs:
-  scan_build_upload_to_ECR_n8n:
+  scan_build_upload_to_ECR_and_Remediation:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -212,22 +216,207 @@ jobs:
 
 
 
-      - name: Send to n8n
+      
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{secrets.AWS_ROLE_TO_ASSUME}}
+          aws-region: ${{secrets.AWS_REGION}}
+
+      - name: Login to ECR (passwordless token)
         run: |
-          SAFE_SONAR=$(cat sonar_issues.json)
-          SAFE_TRIVY=$(python3 -c 'import json,sys; print(json.dumps(open("trivy.sarif").read()))')
+          set -euo pipefail
+          REGISTRY=$(echo "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG" | awk -F/ '{print $1}')
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+      
+      - name: Pull image and extract /app
+        env:
+          ECR_IMAGE: "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
+        run: |
+          set -euo pipefail
+          docker pull "$ECR_IMAGE"
+          CID=$(docker create "$ECR_IMAGE")
+          mkdir -p /tmp/code
+          # Adjust the path if your code isn’t at /app
+          docker cp "$CID":/app /tmp/code/app || true
+          docker rm "$CID"
+          cd /tmp
+          tar -czf code.tar.gz code
+          ls -lah code.tar.gz
 
-          cat <<EOF > payload.json
-          {
-            "event": "DevSecOps Scan Complete",
-            "repo": "${{ github.repository }}",
-            "commit": "${{ github.sha }}",
-            "ecr_image": "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG",
-            "sonarqube_issues": $SAFE_SONAR,
-            "trivy_report": $SAFE_TRIVY
+      - name: Upload snapshot to S3
+        env:
+          SNAPSHOT_BUCKET: ${{ env.SNAPSHOT_BUCKET }}
+        run: |
+          set -euo pipefail
+          KEY="snapshots/${{ github.sha }}/code.tar.gz"
+          aws s3 cp /tmp/code.tar.gz "s3://${SNAPSHOT_BUCKET}/${KEY}"
+          echo "S3_URI=s3://${SNAPSHOT_BUCKET}/${KEY}" >> $GITHUB_ENV
+      
+      - name: Prepare Bedrock input
+        run: |
+          SONAR=$(cat sonar_issues.json)
+          TRIVY=$(python3 -c 'import json,sys; print(json.dumps(open("trivy.sarif").read()))')
+          KEY="snapshots/${{ github.sha }}/code.tar.gz"
+
+          jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "main" \
+            --argjson sonar "$SONAR" \
+            --argjson trivy "$TRIVY" \
+            --arg s3 "s3://${{ env.SNAPSHOT_BUCKET }}/$KEY" \
+            '{repo:$repo, branch:$branch, sonar_messages:$sonar, trivy_report:$trivy, s3_code_snapshot:$s3}' \
+            > bedrock_input.json
+
+          
+      - name: Invoke Bedrock (Claude) to get updates
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          MODEL_ID: ${{ env.MODEL_ID }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, json, boto3, re, io, tarfile
+          br = boto3.client("bedrock-runtime", region_name=os.environ["AWS_REGION"])
+          MODEL = os.environ["MODEL_ID"]
+          body = json.load(open("bedrock_input.json"))
+          system = ("You are a senior secure code reviewer. Given repository files (available via S3 tar), "
+                    "SonarQube messages, and Trivy report, propose minimal, safe fixes. "
+                    "Return ONLY a JSON array: "
+                    "[{\"path\":\"relative/path\",\"newContent\":\"<entire new file>\",\"message\":\"short\"}]. "
+                    "Include only changed files. No extra text.")
+          user = json.dumps(body, ensure_ascii=False)
+          payload = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1500,
+            "temperature": 0.2,
+            "messages": [
+              {"role": "system", "content": system},
+              {"role": "user", "content": user}
+            ]
           }
-          EOF
+          resp = br.invoke_model(
+            modelId=MODEL,
+            body=json.dumps(payload),
+            accept="application/json",
+            contentType="application/json",
+          )
+          out = json.loads(resp["body"].read())
+          txt = "".join([c.get("text","") for c in out.get("content",[]) if c.get("type")=="text"])
+          # Parse strict JSON array
+          try:
+            updates = json.loads(txt)
+            if not isinstance(updates, list):
+              raise ValueError("not list")
+          except Exception:
+            m = re.search(r"(\[\s*\{.*\}\s*\])", txt, re.S)
+            updates = json.loads(m.group(1)) if m else []
+          # Dedup by path
+          dedup = { u["path"]: u for u in updates if "path" in u and "newContent" in u }
+          json.dump({"updates": list(dedup.values())}, open("updates.json","w"))
+          print(json.dumps({"count": len(dedup)}, indent=2))
+          PY
+          jq . updates.json || true 
+      
+      - name: Create remediation branch
+        run: |
+          set -euo pipefail
+          BASE="remediation"
+          BR="remediate/${{ github.sha }}-$(date +%Y%m%d%H%M%S)"
+          git fetch origin "$BASE"
+          git checkout -b "$BR" "origin/$BASE"
+          echo "BRANCH_NAME=$BR" >> $GITHUB_ENV
+      
+      - name: Apply updates (write files)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, json, base64, pathlib
+          data = json.load(open("updates.json"))
+          updates = data.get("updates", [])
+          for u in updates:
+            path = u["path"]
+            content = u["newContent"]
+            fp = pathlib.Path(path)
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text(content, encoding="utf-8")
+          print(f"Applied {len(updates)} updates")
+          PY
+          git status --porcelain
+      
+      
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions-bot"
+          git config user.email "github-actions-bot@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            echo "NO_CHANGES=true" >> $GITHUB_ENV
+          else
+            git commit -m "Automated remediation via Bedrock"
+            git push -u origin "remediation"
+          fi 
+            
+      - name: Create PR
+        if: env.NO_CHANGES != 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ECR_IMAGE: "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
+          TRIVY_REPORT: $(python3 -c 'import json,sys; print(json.dumps(open("trivy.sarif").read()))')
+        run: |
+          set -euo pipefail
+          title="Automated remediation via Bedrock"
+          body=$(
+            jq -n --arg ecr '$ECR_IMAGE' \
+                  --arg sonar '$(cat sonar_issues.json)' \
+                  --arg trivy '$TRIVY_REPORT'\
+            '{ecr: $ecr, sonar: $sonar, trivy: $trivy}' \
+          )
+          PR_URL=$(gh pr create \
+            --title "$title" \
+            --body "ECR: '$ECR_IMAGE' SonarQube Messages:'$(cat sonar_issues.json)'
+            Trivy Report : "$TRIVY_REPORT" \
+            --base "remediation" \
+            --head "$BRANCH_NAME" \
+            --repo "${{ github.repository }}")
+            echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+            echo "$PR_URL"
 
-          curl -X POST https://automation-devj-account11.app.n8n.cloud/webhook/devsecops/raw  \
-            --header 'Content-Type: application/json' \
-            --data @payload.json
+      - name: Create Jira incident
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+        run: |
+          set -euo pipefail
+          SUMMARY="Auto remediation PR for ${{ github.repository }}"
+          DESCRIPTION=$(cat <<'EOT'
+            Repo: ${{ github.repository }}
+            Branch: remediation
+            Commit: ${{ github.sha }}
+            ECR Image: "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
+
+            SonarQube Messages:
+            $(cat sonar_issues.json)
+
+            Trivy Report (may be truncated):
+            $(python3 -c 'import json,sys; print(json.dumps(open("trivy.sarif").read()))')
+
+            PR:
+            ${{ env.PR_URL }}
+            EOT
+            )
+          auth="$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)"
+          curl -sS -X POST "$JIRA_BASE_URL/rest/api/3/issue" \
+            -H "Authorization: Basic $auth" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg key "$JIRA_PROJECT_KEY" \
+              --arg summary "$SUMMARY" \
+              --arg desc "$DESCRIPTION" \
+              '{fields: {project: {key: $key}, issuetype: {name: "Incident"}, summary: $summary, description: $desc}}')"
