@@ -162,7 +162,7 @@ jobs:
 
       - name: Send Sonar → Graylog
         run: |
-          curl -sS -X POST "http://54.160.169.95:12202/gelf" \
+          curl -sS -X POST "http://18.212.86.123:12202/gelf" \
             -H "Content-Type: application/json" \
             -d "{
               \"short_message\": \"SonarQube results\",
@@ -174,7 +174,7 @@ jobs:
 
       - name: Send Trivy → Graylog
         run: |
-          curl -sS -X POST "http://54.160.169.95:12203/gelf" \
+          curl -sS -X POST "http://18.212.86.123:12203/gelf" \
             -H "Content-Type: application/json" \
             -d "{
               \"short_message\": \"Trivy scan results\",
@@ -198,11 +198,6 @@ jobs:
           path: .
 
       - name: Fetch SonarQube issues
-        env:
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
-
         run: |
           set -euo pipefail
 
@@ -210,50 +205,40 @@ jobs:
           PARAMS="projectKeys=${SONAR_PROJECT_KEY}&types=BUG&severities=MAJOR,CRITICAL,BLOCKER&resolved=false&ps=500"
           
 
-        
+          # Fetch first page
           curl -s -u "${SONAR_TOKEN}:" "${BASE_URL}?${PARAMS}&p=1" -o page1.json
-
           TOTAL=$(jq -r '.total // 0' page1.json)
           PAGES=$(( (TOTAL + 500 - 1) / 500 ))
-          : > all_issues.jsonl
 
-          
-          jq -c '.issues[]' page1.json >> all_issues.jsonl
-
-          
+          # Collect all issues into one array
+          jq -c '.issues[]?' page1.json > all_issues.jsonl
           if [ "$PAGES" -gt 1 ]; then
             for p in $(seq 2 "$PAGES"); do
               curl -s -u "${SONAR_TOKEN}:" "${BASE_URL}?${PARAMS}&p=${p}" -o "page${p}.json"
-              jq -c '.issues[]' "page${p}.json" >> all_issues.jsonl
+              jq -c '.issues[]?' "page${p}.json" >> all_issues.jsonl
             done
           fi
 
-          if [ ! -s all_issues.jsonl ]; then
-            printf '' > all_issues.jsonl
-          fi
-
-          jq -s --arg project "${SONAR_PROJECT_KEY}" --arg branch "${SONAR_BRANCH:-}" '[
-            .[] # array of issue objects
-          ] as $issues |
-          {
+          # Build compact summary JSON
+          jq -s --arg project "${SONAR_PROJECT_KEY}" --arg branch "${SONAR_BRANCH:-}" '{
             projectKey: $project,
             branch: ($branch | select(length>0)),
-            total: ($issues | length),
-            major: ($issues | map(select(.severity=="MAJOR")) | length),
-            critical: ($issues | map(select(.severity=="CRITICAL")) | length),
-            blocker: ($issues | map(select(.severity=="BLOCKER")) | length),
-            issues: ($issues | map({
-              key, rule, severity, type,
-              message,
-              component,
+            total: length,
+            major: map(select(.severity=="MAJOR")) | length,
+            critical: map(select(.severity=="CRITICAL")) | length,
+            blocker: map(select(.severity=="BLOCKER")) | length,
+            issues: map({
+              key, rule, severity, type, message, component,
               line: (.line // null),
               author: (.author // null),
               creationDate: (.creationDate // null),
               tags: (.tags // [])
-            }))
+            })
           }' all_issues.jsonl > sonar_issues.json
 
+          echo "SonarQube summary:"
           jq '{projectKey, branch, total, major, critical, blocker}' sonar_issues.json
+
 
 
       - name: Send to n8n
