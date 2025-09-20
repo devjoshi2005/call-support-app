@@ -257,18 +257,22 @@ jobs:
       
       - name: Prepare Bedrock input
         run: |
-          SONAR=$(cat sonar_issues.json)
-          TRIVY=$(python3 -c 'import json,sys; print(json.dumps(open("trivy.sarif").read()))')
+          set -euo pipefail
           KEY="snapshots/${{ github.sha }}/code.tar.gz"
+
+          SONAR=$(cat sonar_issues.json)
+
+          TRIVY=$(cat trivy.sarif | jq -c '.')
 
           jq -n \
             --arg repo "${{ github.repository }}" \
             --arg branch "main" \
+            --arg s3 "s3://${{ env.SNAPSHOT_BUCKET }}/$KEY" \
             --argjson sonar "$SONAR" \
             --argjson trivy "$TRIVY" \
-            --arg s3 "s3://${{ env.SNAPSHOT_BUCKET }}/$KEY" \
             '{repo:$repo, branch:$branch, sonar_messages:$sonar, trivy_report:$trivy, s3_code_snapshot:$s3}' \
             > bedrock_input.json
+          
 
           
       - name: Invoke Bedrock (Claude) to get updates
