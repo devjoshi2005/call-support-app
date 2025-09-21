@@ -474,28 +474,29 @@ jobs:
         run: |
           set -euo pipefail
           SUMMARY="Auto remediation PR for ${{ github.repository }}"
-          DESCRIPTION=$(cat <<'EOT'
-            Repo: ${{ github.repository }}
-            Branch: remediation
-            Commit: ${{ github.sha }}
-            ECR Image: "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
 
-            SonarQube Messages:
-            $(cat sonar_issues.json)
+          # Compact Sonar + Trivy content to avoid huge payloads
+          sonar=$(jq -c . sonar_issues.json || echo "{}")
+          trivy=$(jq -c '{messages: [.runs[].tool.driver.rules[] | {id, severity: .defaultConfiguration.level, message: .shortDescription.text}]}' trivy.sarif | jq '.messages[:50]' || echo "[]")
 
-            Trivy Report (may be truncated):
-            $(python3 -c 'import json,sys; print(json.dumps(open("trivy.sarif").read()))')
+          DESCRIPTION="Repo: ${{ github.repository }}
+          Branch: remediation
+          Commit: ${{ github.sha }}
+          ECR Image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
 
-            PR:
-            ${{ env.PR_URL }}
-            EOT
-            )
+          SonarQube Messages: $sonar
+
+          Trivy Report (messages only, truncated): $trivy
+          PR: ${{ env.PR_URL }}"
+
           auth="$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)"
+
+                # Send to Jira
           curl -sS -X POST "$JIRA_BASE_URL/rest/api/3/issue" \
-            -H "Authorization: Basic $auth" \
-            -H "Content-Type: application/json" \
-            --data "$(jq -n \
-              --arg key "$JIRA_PROJECT_KEY" \
-              --arg summary "$SUMMARY" \
-              --arg desc "$DESCRIPTION" \
+                  -H "Authorization: Basic $auth" \
+                  -H "Content-Type: application/json" \
+                  --data "$(jq -n \
+                    --arg key "$JIRA_PROJECT_KEY" \
+                    --arg summary "$SUMMARY" \
+                    --arg desc "$DESCRIPTION" \
               '{fields: {project: {key: $key}, issuetype: {name: "Incident"}, summary: $summary, description: $desc}}')"
