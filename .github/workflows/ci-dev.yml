@@ -415,8 +415,8 @@ jobs:
       - name: Commit and push
         run: |
           set -euo pipefail
-          git config user.name "github-actions-bot"
-          git config user.email "github-actions-bot@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           if git diff --cached --quiet; then
             echo "No changes to commit."
@@ -424,7 +424,7 @@ jobs:
           else
             git commit -m "Automated remediation via Bedrock"
             git push -u origin "$BRANCH_NAME"
-          fi 
+          fi
             
       - name: Create PR
         if: env.NO_CHANGES != 'true'
