@@ -316,11 +316,9 @@ jobs:
           body = json.load(open("bedrock_input.json"))
 
           # --- Slim inputs for speed ---
-          # Cap Sonar messages
           if "sonar_messages" in body and isinstance(body["sonar_messages"], list):
               body["sonar_messages"] = body["sonar_messages"][:50]
 
-          # Extract only Trivy messages (shortDescription + severity)
           if "trivy_report" in body and isinstance(body["trivy_report"], dict):
               runs = body["trivy_report"].get("runs", [])
               messages = []
@@ -332,7 +330,6 @@ jobs:
                           "message": rule.get("shortDescription", {}).get("text")
                       }
                       messages.append(msg)
-              # Cap at 200 messages
               body["trivy_report"] = messages[:200]
 
           system_prompt = (
@@ -345,7 +342,7 @@ jobs:
 
           payload = {
               "anthropic_version": "bedrock-2023-05-31",
-              "max_tokens": 800,   # reduced for faster response
+              "max_tokens": 800,
               "temperature": 0.2,
               "system": system_prompt,
               "messages": [
@@ -368,12 +365,15 @@ jobs:
           out = json.loads(resp["body"].read())
           txt = "".join([c.get("text","") for c in out.get("content",[]) if c.get("type")=="text"])
 
+          # --- Clean invalid control characters before parsing ---
+          txt_clean = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', txt)
+
           try:
-              updates = json.loads(txt)
+              updates = json.loads(txt_clean)
               if not isinstance(updates, list):
                   raise ValueError("not list")
           except Exception:
-              m = re.search(r"(\[\s*\{.*\}\s*\])", txt, re.S)
+              m = re.search(r"(\[\s*\{.*\}\s*\])", txt_clean, re.S)
               updates = json.loads(m.group(1)) if m else []
 
           dedup = {u["path"]: u for u in updates if "path" in u and "newContent" in u}
@@ -382,6 +382,7 @@ jobs:
           PY
 
           jq . updates.json || true
+
 
 
       
