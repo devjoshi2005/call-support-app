@@ -476,7 +476,7 @@ jobs:
           SUMMARY="Auto remediation PR for ${{ github.repository }}"
 
           # Compact Sonar + Trivy content to avoid huge payloads
-          sonar=$(jq -c . sonar_issues.json || echo "{}")
+          sonar=$(jq -c . sonar_issues.json || echo "{}" )
           trivy=$(jq -c '{messages: [.runs[].tool.driver.rules[] | {id, severity: .defaultConfiguration.level, message: .shortDescription.text}]}' trivy.sarif | jq '.messages[:50]' || echo "[]")
 
           DESCRIPTION="Repo: ${{ github.repository }}
