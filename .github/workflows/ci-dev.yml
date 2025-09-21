@@ -206,7 +206,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          
+
           BASE_URL="${{secrets.SONAR_HOST_URL}}/api/issues/search"
           PARAMS="projectKeys=${{secrets.SONAR_PROJECT_KEY}}&types=BUG&resolved=false&ps=500"
          
@@ -294,51 +294,67 @@ jobs:
       - name: Invoke Bedrock (Claude) to get updates
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          MODEL_ID: ${{ env.MODEL_ID }}
+          MODEL_ID: us.anthropic.claude-3-sonnet-20240229-v1:0
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, json, boto3, re, io, tarfile
-          br = boto3.client("bedrock-runtime", region_name=os.environ["AWS_REGION"])
-          MODEL = os.environ["MODEL_ID"]
+          import os, json, boto3, re
+
+          region = os.environ["AWS_REGION"]
+          model_id = os.environ["MODEL_ID"]
+
+          br = boto3.client("bedrock-runtime", region_name=region)
+
           body = json.load(open("bedrock_input.json"))
-          system = ("You are a senior secure code reviewer. Given repository files (available via S3 tar), "
-                    "SonarQube messages, and Trivy report, propose minimal, safe fixes. "
-                    "Return ONLY a JSON array: "
-                    "[{\"path\":\"relative/path\",\"newContent\":\"<entire new file>\",\"message\":\"short\"}]. "
-                    "Include only changed files. No extra text.")
-          user = json.dumps(body, ensure_ascii=False)
-          payload = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1500,
-            "temperature": 0.2,
-            "messages": [
-              {"role": "system", "content": system},
-              {"role": "user", "content": user}
-            ]
-          }
-          resp = br.invoke_model(
-            modelId=MODEL,
-            body=json.dumps(payload),
-            accept="application/json",
-            contentType="application/json",
+
+          system_prompt = (
+              "You are a senior secure code reviewer. Given repository files (available via S3 tar), "
+              "SonarQube messages, and Trivy report, propose minimal, safe fixes. "
+              "Return ONLY a JSON array: "
+              "[{\"path\":\"relative/path\",\"newContent\":\"<entire new file>\",\"message\":\"short\"}]. "
+              "Include only changed files. No extra text."
           )
+
+          payload = {
+              "anthropic_version": "bedrock-2023-05-31",
+              "max_tokens": 1500,
+              "temperature": 0.2,
+              "system": system_prompt,
+              "messages": [
+                  {
+                      "role": "user",
+                      "content": [
+                          {"type": "text", "text": json.dumps(body, ensure_ascii=False)}
+                      ]
+                  }
+              ]
+          }
+
+          resp = br.invoke_model(
+              modelId=model_id,
+              body=json.dumps(payload),
+              accept="application/json",
+              contentType="application/json",
+          )
+
           out = json.loads(resp["body"].read())
           txt = "".join([c.get("text","") for c in out.get("content",[]) if c.get("type")=="text"])
-          # Parse strict JSON array
+
           try:
-            updates = json.loads(txt)
-            if not isinstance(updates, list):
-              raise ValueError("not list")
+              updates = json.loads(txt)
+              if not isinstance(updates, list):
+                  raise ValueError("not list")
           except Exception:
-            m = re.search(r"(\[\s*\{.*\}\s*\])", txt, re.S)
-            updates = json.loads(m.group(1)) if m else []
-          # Dedup by path
-          dedup = { u["path"]: u for u in updates if "path" in u and "newContent" in u }
+              m = re.search(r"(\[\s*\{.*\}\s*\])", txt, re.S)
+              updates = json.loads(m.group(1)) if m else []
+
+          dedup = {u["path"]: u for u in updates if "path" in u and "newContent" in u}
           json.dump({"updates": list(dedup.values())}, open("updates.json","w"))
           print(json.dumps({"count": len(dedup)}, indent=2))
           PY
-          jq . updates.json || true 
+
+          jq . updates.json || true
+
       
       - name: Create remediation branch
         run: |
