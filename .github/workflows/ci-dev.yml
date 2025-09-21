@@ -491,12 +491,12 @@ jobs:
 
           auth="$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)"
 
-                # Send to Jira
           curl -sS -X POST "$JIRA_BASE_URL/rest/api/3/issue" \
-                  -H "Authorization: Basic $auth" \
-                  -H "Content-Type: application/json" \
-                  --data "$(jq -n \
-                    --arg key "$JIRA_PROJECT_KEY" \
-                    --arg summary "$SUMMARY" \
-                    --arg desc "$DESCRIPTION" \
-              '{fields: {project: {key: $key}, issuetype: {name: "Incident"}, summary: $summary, description: $desc}}')"
+            -H "Authorization: Basic $auth" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -n \
+              --arg key "$JIRA_PROJECT_KEY" \
+              --arg summary "$SUMMARY" \
+              --arg desc "$DESCRIPTION" \
+              '{fields: {project: {key: $key}, issuetype: {name: "Task"}, summary: $summary, description: $desc}}')"
+
