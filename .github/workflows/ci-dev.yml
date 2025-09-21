@@ -299,13 +299,41 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import os, json, boto3, re
+          from botocore.config import Config
+
+          # Extended timeouts + retries
+          config = Config(
+              read_timeout=180,
+              connect_timeout=30,
+              retries={'max_attempts': 3, 'mode': 'standard'}
+          )
 
           region = os.environ["AWS_REGION"]
           model_id = os.environ["MODEL_ID"]
 
-          br = boto3.client("bedrock-runtime", region_name=region)
+          br = boto3.client("bedrock-runtime", region_name=region, config=config)
 
           body = json.load(open("bedrock_input.json"))
+
+          # --- Slim inputs for speed ---
+          # Cap Sonar messages
+          if "sonar_messages" in body and isinstance(body["sonar_messages"], list):
+              body["sonar_messages"] = body["sonar_messages"][:50]
+
+          # Extract only Trivy messages (shortDescription + severity)
+          if "trivy_report" in body and isinstance(body["trivy_report"], dict):
+              runs = body["trivy_report"].get("runs", [])
+              messages = []
+              for run in runs:
+                  for rule in run.get("tool", {}).get("driver", {}).get("rules", []):
+                      msg = {
+                          "id": rule.get("id"),
+                          "severity": rule.get("defaultConfiguration", {}).get("level"),
+                          "message": rule.get("shortDescription", {}).get("text")
+                      }
+                      messages.append(msg)
+              # Cap at 200 messages
+              body["trivy_report"] = messages[:200]
 
           system_prompt = (
               "You are a senior secure code reviewer. Given repository files (available via S3 tar), "
@@ -317,7 +345,7 @@ jobs:
 
           payload = {
               "anthropic_version": "bedrock-2023-05-31",
-              "max_tokens": 1500,
+              "max_tokens": 800,   # reduced for faster response
               "temperature": 0.2,
               "system": system_prompt,
               "messages": [
@@ -354,6 +382,7 @@ jobs:
           PY
 
           jq . updates.json || true
+
 
       
       - name: Create remediation branch
