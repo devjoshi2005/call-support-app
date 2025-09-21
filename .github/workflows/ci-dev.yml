@@ -388,7 +388,7 @@ jobs:
       - name: Create remediation branch
         run: |
           set -euo pipefail
-          BASE="remediation"
+          BASE="main"
           BR="remediate/${{ github.sha }}-$(date +%Y%m%d%H%M%S)"
           git fetch origin "$BASE"
           git checkout -b "$BR" "origin/$BASE"
@@ -407,7 +407,6 @@ jobs:
             fp = pathlib.Path(path)
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
-          print(f"Applied {len(updates)} updates")
           PY
           git status --porcelain
       
@@ -423,7 +422,7 @@ jobs:
             echo "NO_CHANGES=true" >> $GITHUB_ENV
           else
             git commit -m "Automated remediation via Bedrock"
-            git push -u origin "remediation"
+            git push -u origin "$BRANCH_NAME"
           fi 
             
       - name: Create PR
@@ -446,7 +445,7 @@ jobs:
             --title "$title" \
             --body "ECR: '$ECR_IMAGE' SonarQube Messages:'$(cat sonar_issues.json)'
             Trivy Report : "$TRIVY_REPORT" \
-            --base "remediation" \
+            --base "main" \
             --head "$BRANCH_NAME" \
             --repo "${{ github.repository }}")
             echo "PR_URL=$PR_URL" >> $GITHUB_ENV
