@@ -432,25 +432,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ECR_IMAGE: "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG"
-          TRIVY_REPORT: $(python3 -c 'import json,sys; print(json.dumps(open("trivy.sarif").read()))')
         run: |
           set -euo pipefail
           title="Automated remediation via Bedrock"
-          body=$(
-            jq -n --arg ecr '$ECR_IMAGE' \
-                  --arg sonar '$(cat sonar_issues.json)' \
-                  --arg trivy '$TRIVY_REPORT'\
-            '{ecr: $ecr, sonar: $sonar, trivy: $trivy}' \
-          )
+
+          sonar=$(jq -c . sonar_issues.json)
+          trivy=$(jq -c . trivy.sarif)
+
+          body=$(jq -n \
+            --arg ecr "$ECR_IMAGE" \
+            --arg sonar "$sonar" \
+            --arg trivy "$trivy" \
+            '{ecr: $ecr, sonar: $sonar, trivy: $trivy}')
+
           PR_URL=$(gh pr create \
             --title "$title" \
-            --body "ECR: '$ECR_IMAGE' SonarQube Messages:'$(cat sonar_issues.json)'
-            Trivy Report : "$TRIVY_REPORT" \
+            --body "$body" \
             --base "main" \
             --head "$BRANCH_NAME" \
             --repo "${{ github.repository }}")
-            echo "PR_URL=$PR_URL" >> $GITHUB_ENV
-            echo "$PR_URL"
+
+          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+          echo "$PR_URL"
 
       - name: Create Jira incident
         env:
