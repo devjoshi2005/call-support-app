@@ -301,7 +301,7 @@ jobs:
           import os, json, boto3, re
           from botocore.config import Config
 
-          # Extended timeouts + retries
+          # Extended timeouts +  retries
           config = Config(
               read_timeout=180,
               connect_timeout=30,
