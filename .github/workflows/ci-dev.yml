@@ -436,13 +436,22 @@ jobs:
           set -euo pipefail
           title="Automated remediation via Bedrock"
 
+          # Compact Sonar issues
           sonar=$(jq -c . sonar_issues.json)
-          trivy=$(jq -c . trivy.sarif)
 
+          # Extract only Trivy messages (id, severity, shortDescription.text)
+          trivy=$(jq -c '{
+            messages: [
+              .runs[].tool.driver.rules[]
+              | {id, severity: .defaultConfiguration.level, message: .shortDescription.text}
+            ]
+          }' trivy.sarif | jq '.messages[:200]')
+
+          # Build PR body
           body=$(jq -n \
             --arg ecr "$ECR_IMAGE" \
             --arg sonar "$sonar" \
-            --arg trivy "$trivy" \
+            --argjson trivy "$trivy" \
             '{ecr: $ecr, sonar: $sonar, trivy: $trivy}')
 
           PR_URL=$(gh pr create \
@@ -454,6 +463,7 @@ jobs:
 
           echo "PR_URL=$PR_URL" >> $GITHUB_ENV
           echo "$PR_URL"
+
 
       - name: Create Jira incident
         env:
