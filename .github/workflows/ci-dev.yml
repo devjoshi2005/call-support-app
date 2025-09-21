@@ -206,6 +206,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          
           BASE_URL="${{secrets.SONAR_HOST_URL}}/api/issues/search"
           PARAMS="projectKeys=${{secrets.SONAR_PROJECT_KEY}}&types=BUG&resolved=false&ps=500"
          
